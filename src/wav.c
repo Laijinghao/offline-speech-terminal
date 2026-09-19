@@ -10,6 +10,26 @@ static int fail(char *err, size_t cap, const char *message) {
 }
 void wav_free(WavData *w) { free(w->samples); memset(w,0,sizeof(*w)); }
 
+static void put16(unsigned char *p, uint16_t v) { p[0]=(unsigned char)v; p[1]=(unsigned char)(v>>8); }
+static void put32(unsigned char *p, uint32_t v) { put16(p,(uint16_t)v); put16(p+2,(uint16_t)(v>>16)); }
+int wav_write_pcm16(FILE *f, const int16_t *samples, int32_t count, char *err, size_t cap) {
+    unsigned char header[44]={0};
+    if (!f || !samples || count<=0 || count>960000)
+        return fail(err,cap,"PCM16 output requires 1..960000 samples.");
+    uint32_t bytes=(uint32_t)count*2;
+    memcpy(header,"RIFF",4); put32(header+4,36+bytes);
+    memcpy(header+8,"WAVEfmt ",8); put32(header+16,16); put16(header+20,1);
+    put16(header+22,1); put32(header+24,16000); put32(header+28,32000);
+    put16(header+32,2); put16(header+34,16); memcpy(header+36,"data",4); put32(header+40,bytes);
+    if(fwrite(header,1,sizeof(header),f)!=sizeof(header)) return fail(err,cap,"WAV header write failed.");
+    for(int32_t i=0;i<count;++i) {
+        unsigned char p[2]; put16(p,(uint16_t)samples[i]);
+        if(fwrite(p,1,2,f)!=2) return fail(err,cap,"WAV sample write failed.");
+    }
+    if(fflush(f)!=0) return fail(err,cap,"WAV flush failed.");
+    return 0;
+}
+
 int wav_read(FILE *f, WavData *out, char *err, size_t cap) {
     unsigned char header[16], fmt[16];
     long file_size, data_pos=0;

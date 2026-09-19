@@ -2,11 +2,11 @@
 
 应用源代码全部是 C，底层通过 sherpa-onnx 的正式 C API 使用预训练 SenseVoice 模型，不需要训练模型或编写 Python。
 
-当前仅做本地 WAV 文件识别，不包含实时录音、分段、屏幕或 PCB。
+当前支持本地 WAV 文件识别，以及 Linux 麦克风定时录音后转写。尚不包含边说边显示、自动分段、屏幕或 PCB。
 
 ## 从 GitHub 开始（Ubuntu x86_64）
 
-准备 GCC、CMake（3.16及以上）、Make、Git、curl、tar/bzip2。可通过 Ubuntu 软件仓库安装这些工具。下载脚本只写入当前项目，不自动安装系统软件。
+准备 GCC、CMake（3.16及以上）、Make、Git、curl、tar/bzip2，以及录音所需的 ALSA 开发包 `libasound2-dev`。可通过 Ubuntu 软件仓库安装这些工具。下载脚本只写入当前项目，不自动安装系统软件。
 
 ```sh
 git clone https://github.com/Laijinghao/offline-speech-terminal.git
@@ -41,7 +41,7 @@ sh run_sample.sh
 
 ## Ubuntu 构建
 
-需要 GCC、CMake、Make；在项目根目录执行：
+需要 GCC、CMake、Make、libasound2-dev；在项目根目录执行（只需文件识别时可添加 `-DENABLE_MIC=OFF`）：
 
 ```sh
 cmake -S . -B build -DSHERPA_ROOT="$PWD/deps/sherpa-onnx-v1.13.8-linux-x64-shared-no-tts"
@@ -62,13 +62,32 @@ cmake --build build -j2
 ./build/asr_demo --model-dir ./models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17 --wav ./my_voice.wav --output ./results/my_voice.txt
 ```
 
-手机录音常见的 M4A 不能直接改后缀当 WAV；应使用音频工具转换成 16000Hz、单声道、PCM16 后再输入。目前不自动启动麦克风，也不采集个人录音。
+手机录音常见的 M4A 不能直接改后缀当 WAV；应使用音频工具转换成 16000Hz、单声道、PCM16 后再输入。
+
+## Linux 麦克风录音后转写
+
+接好麦克风，在 Ubuntu 桌面登录后运行：
+
+```sh
+sh run_mic.sh 10
+```
+
+等待三秒倒计时，出现 `RECORDING` 后讲话。录满十秒后自动保存 WAV 并转写，终端显示录音和文本路径。时长可设为 1～60 秒；Ctrl+C 取消录音，不发布不完整的 WAV。每次运行均重新加载模型。
+
+```sh
+./build/record_wav --list-devices
+sh run_mic.sh 10 default
+```
+
+设备列表是 ALSA 候选接口，不保证每项都有可用的物理麦克风。默认设备通常由桌面音频服务路由；虚拟机还取决于宿主机输入设备。若识别为空或内容不符，先检查静音、输入设备、输入音量并回听录音。`peak` 仅表示采样峰值，不能单独证明录到了清晰人声。录音目录需要支持硬链接，建议使用 Ubuntu 本地文件系统。
+
+录音文件保存在 `recordings/`，文字保存在 `results/`，两者均被 Git 忽略。录音功能目前仅支持 Linux；Windows 仍用于文件识别验证。真实麦克风测试及排错见 [第二阶段验证](docs/MIC_VALIDATION.md)。
 
 ## Windows 辅助验证
 
 在 PowerShell 中进入 Windows 项目的 `offline_asr` 目录，可运行 `build/asr_demo.exe`，参数同上。Ubuntu 是主要验收环境。Windows 的编译版本只方便对照，不表示开发板已经部署。
 
-本机 Windows 已有 MinGW GCC，可运行 `./build_windows.ps1` 重新编译和测试。Windows 与 Ubuntu 的 build 目录分别保留，不能互相复制使用。
+本机 Windows 已有 MinGW GCC，可在 PowerShell 7 中运行 `./build_windows.ps1` 重新编译和测试。Windows PowerShell 5.1 对测试中预期的标准错误处理不同，会中断测试脚本；当前请使用 PowerShell 7。Windows 与 Ubuntu 的 build 目录分别保留，不能互相复制使用。
 
 第一阶段仅支持 x86_64 主机发行包；以后在 ARM 开发板上必须更换匹配架构的依赖并重新编译。
 
@@ -78,6 +97,7 @@ cmake --build build -j2
 2. `src/wav.c`：RIFF/WAV 分块读取，把有符号 PCM16 转为浮点采样。
 3. `src/asr.c`：配置并调用识别库，管理资源和计时。
 4. `tests/test_wav.c`：构造有效/损坏的音频头进行测试，不依赖模型。
+5. `src/record.c`：ALSA 采集、倒计时、取消、超时和完整 WAV 保存。
 
 ## 性能指标
 

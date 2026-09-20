@@ -25,14 +25,15 @@ static double now_seconds(void) {
 }
 const char *asr_version(void) { return SherpaOnnxGetVersionStr(); }
 void asr_result_free(AsrResult *r) { free(r->text); memset(r,0,sizeof(*r)); }
-int asr_transcribe(const char *model, const char *tokens, int threads,
-                   const WavData *wave, AsrResult *out, char *err, size_t cap) {
-    const SherpaOnnxOfflineRecognizer *recognizer=NULL;
-    const SherpaOnnxOfflineStream *stream=NULL;
-    const SherpaOnnxOfflineRecognizerResult *result=NULL;
-    const char *message="Recognizer initialization failed. Check model and tokens.";
-    int status=-1;
-    memset(out,0,sizeof(*out));
+struct AsrEngine { const SherpaOnnxOfflineRecognizer *recognizer; };
+void asr_engine_destroy(AsrEngine *engine) {
+    if(engine) { if(engine->recognizer) SherpaOnnxDestroyOfflineRecognizer(engine->recognizer); free(engine); }
+}
+AsrEngine *asr_engine_create(const char *model, const char *tokens, int threads,
+                            double *load_seconds, char *err, size_t cap) {
+    AsrEngine *engine=calloc(1,sizeof(*engine));
+    *load_seconds=0;
+    if(!engine) { if(cap) snprintf(err,cap,"Cannot allocate engine."); return NULL; }
     /* C API 的结构体必须清零，再设置实际使用的 SenseVoice 字段。 */
     SherpaOnnxOfflineRecognizerConfig config;
     memset(&config,0,sizeof(config));
@@ -46,16 +47,26 @@ int asr_transcribe(const char *model, const char *tokens, int threads,
     config.model_config.sense_voice.language="zh";
     config.model_config.sense_voice.use_itn=1;
     double start=now_seconds();
-    recognizer=SherpaOnnxCreateOfflineRecognizer(&config);
-    out->load_seconds=now_seconds()-start;
-    if (!recognizer) goto cleanup;
-    message="Cannot create recognition stream.";
-    stream=SherpaOnnxCreateOfflineStream(recognizer);
+    engine->recognizer=SherpaOnnxCreateOfflineRecognizer(&config);
+    *load_seconds=now_seconds()-start;
+    if(!engine->recognizer) {
+        if(cap) snprintf(err,cap,"Recognizer initialization failed. Check model and tokens.");
+        free(engine); return NULL;
+    }
+    return engine;
+}
+int asr_engine_transcribe(AsrEngine *engine, const WavData *wave, AsrResult *out, char *err, size_t cap) {
+    const SherpaOnnxOfflineStream *stream=NULL;
+    const SherpaOnnxOfflineRecognizerResult *result=NULL;
+    const char *message="Cannot create recognition stream.";
+    int status=-1;
+    memset(out,0,sizeof(*out));
+    stream=SherpaOnnxCreateOfflineStream(engine->recognizer);
     if (!stream) goto cleanup;
     /* 解码计时包含输入送入和结果提取，不包含模型加载、读文件和写文件。 */
-    start=now_seconds();
+    double start=now_seconds();
     SherpaOnnxAcceptWaveformOffline(stream,wave->sample_rate,wave->samples,wave->count);
-    SherpaOnnxDecodeOfflineStream(recognizer,stream);
+    SherpaOnnxDecodeOfflineStream(engine->recognizer,stream);
     result=SherpaOnnxGetOfflineStreamResult(stream);
     out->decode_seconds=now_seconds()-start;
     message="Recognition did not return a valid result.";
@@ -68,7 +79,17 @@ int asr_transcribe(const char *model, const char *tokens, int threads,
 cleanup:
     if (result) SherpaOnnxDestroyOfflineRecognizerResult(result);
     if (stream) SherpaOnnxDestroyOfflineStream(stream);
-    if (recognizer) SherpaOnnxDestroyOfflineRecognizer(recognizer);
     if (status && cap) snprintf(err,cap,"%s",message);
     return status;
+}
+int asr_transcribe(const char *model, const char *tokens, int threads,
+                   const WavData *wave, AsrResult *out, char *err, size_t cap) {
+    double load=0;
+    memset(out,0,sizeof(*out));
+    AsrEngine *engine=asr_engine_create(model,tokens,threads,&load,err,cap);
+    if(!engine) return -1;
+    int rc=asr_engine_transcribe(engine,wave,out,err,cap);
+    out->load_seconds=load;
+    asr_engine_destroy(engine);
+    return rc;
 }

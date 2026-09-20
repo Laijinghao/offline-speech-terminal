@@ -3,6 +3,7 @@
 #include "wav.h"
 #include <errno.h>
 #include <signal.h>
+#include <poll.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,7 +19,8 @@ static double now(void) {
     return (double)t.tv_sec+(double)t.tv_nsec/1e9;
 }
 static void usage(void) {
-    puts("record_wav --output NEW.wav [--seconds 1..60] [--device NAME]\n"
+    puts("record_wav --output NEW.wav [--seconds 1..60] [--device NAME] [--interactive]\n"
+         "Interactive: Enter starts/stops; --seconds is the limit (default 60).\n"
          "record_wav --list-devices\n"
          "Defaults: 10 seconds, default ALSA device; 3-second countdown.\n"
          "Writes mono 16000Hz PCM16. Ctrl+C cancels without publishing partial audio.\n"
@@ -39,12 +41,13 @@ static int list_devices(void) {
 }
 int main(int argc,char **argv) {
     const char *device="default", *output=NULL;
-    int seconds=10, have_seconds=0, have_device=0, status=2;
+    int seconds=10, have_seconds=0, have_device=0, status=2, interactive=0;
     snd_pcm_t *pcm=NULL; int16_t *samples=NULL; FILE *file=NULL;
     char *temporary=NULL, error[256]; int temp_created=0;
     if(argc==2 && !strcmp(argv[1],"--help")) {usage(); return 0;}
     if(argc==2 && !strcmp(argv[1],"--list-devices")) return list_devices();
     for(int i=1;i<argc;++i) {
+        if(!strcmp(argv[i],"--interactive") && !interactive) {interactive=1;continue;}
         if(i+1>=argc) {usage(); goto cleanup;}
         if(!strcmp(argv[i],"--output") && !output) output=argv[++i];
         else if(!strcmp(argv[i],"--device") && !have_device) {device=argv[++i];have_device=1;}
@@ -55,6 +58,10 @@ int main(int argc,char **argv) {
         } else {usage();goto cleanup;}
     }
     if(!output || !*output || !*device) {usage();goto cleanup;}
+    if(interactive && !have_seconds) seconds=60;
+    if(interactive && !isatty(STDIN_FILENO)) {
+        fprintf(stderr,"Interactive recording requires a terminal.\n");goto cleanup;
+    }
     struct stat st;
     if(lstat(output,&st)==0) {fprintf(stderr,"Output exists: %s\n",output);status=4;goto cleanup;}
     struct sigaction sa={0}; sa.sa_handler=on_signal; sigemptyset(&sa.sa_mask);
@@ -76,15 +83,35 @@ int main(int argc,char **argv) {
     if(fd<0) {perror("Cannot create output temporary file");goto cleanup;}
     temp_created=1; file=fdopen(fd,"wb");
     if(!file) {close(fd);perror("fdopen");goto cleanup;}
-    fprintf(stderr,"Device: %s; duration: %d seconds. Get ready.\n",device,seconds);
-    for(int n=3;n>0 && !stopped;--n) {fprintf(stderr,"%d...\n",n);sleep(1);}
+    fprintf(stderr,"Device: %s; duration limit: %d seconds.\n",device,seconds);
+    if(interactive) {
+        fprintf(stderr,"READY: press Enter to start; q + Enter quits; Ctrl+C cancels.\n");
+        char ch=0; ssize_t n;
+        int quit=0;
+        do {n=read(STDIN_FILENO,&ch,1); if(n>0 && ch=='q') quit=1;} while(n>0 && ch!='\n' && !stopped);
+        if(n<=0 || stopped) {status=130;goto cleanup;}
+        if(quit) {status=131;goto cleanup;}
+    } else {
+        for(int n=3;n>0 && !stopped;--n) {fprintf(stderr,"%d...\n",n);sleep(1);}
+    }
     if(stopped) {status=130;goto cleanup;}
     status=3;
     rc=snd_pcm_start(pcm);
     if(rc<0) {fprintf(stderr,"Cannot start capture: %s\n",snd_strerror(rc));goto cleanup;}
     fprintf(stderr,"RECORDING: speak now.\n");
+    if(interactive) fprintf(stderr,"Press Enter to finish and transcribe.\n");
     size_t received=0; double deadline=now()+seconds+10;
     while(received<target && !stopped) {
+        if(interactive) {
+            struct pollfd input={STDIN_FILENO,POLLIN,0};
+            int ready=poll(&input,1,0);
+            if(ready<0 && errno!=EINTR) {perror("Terminal poll");goto cleanup;}
+            if(ready>0) {
+                char ch; ssize_t n=read(STDIN_FILENO,&ch,1);
+                if(n<=0) {status=130;goto cleanup;}
+                if(ch=='\n') break;
+            }
+        }
         if(now()>deadline) {fprintf(stderr,"Capture timeout. Check device or VM audio routing.\n");goto cleanup;}
         snd_pcm_uframes_t want=(snd_pcm_uframes_t)(target-received);
         if(want>1024) want=1024;
@@ -100,6 +127,8 @@ int main(int argc,char **argv) {
     }
     snd_pcm_drop(pcm);
     if(stopped) {status=130;goto cleanup;}
+    if(received==0) {fprintf(stderr,"No samples captured; no WAV saved.\n");status=3;goto cleanup;}
+    target=received;
     unsigned peak=0;
     for(size_t i=0;i<target;++i) {int v=samples[i];unsigned a=(unsigned)(v<0?-v:v);if(a>peak)peak=a;}
     fprintf(stderr,"Capture complete: samples=%zu peak=%u/32768\n",target,peak);

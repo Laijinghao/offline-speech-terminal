@@ -66,6 +66,10 @@ cmake --build build -j2
 
 ## Linux 麦克风录音后转写
 
+连续多轮模式：`sh run_session.sh`。模型启动时加载一次；每轮回车开始、回车停止，自动转写后进入下一轮。等待开始时输入 `q` 再回车退出。录音/格式/文本保存等单轮错误会提示重试；Ctrl+C 退出会话。每次启动在 `recordings/session_XXXXXX/` 下创建独立目录，每轮包含 WAV/TXT，另有 `metrics.tsv` 耗时日志。见 [多轮会话说明](docs/SESSION.md)。
+
+单句交互模式：运行 `sh run_sentence.sh`，出现 READY 后按回车开始，看到 RECORDING 后讲话，再按回车停止并自动转写。最长 60 秒，Ctrl+C 取消。需要真实终端；每轮重新加载模型。详见 [回车控制录音](docs/SENTENCE_RECORDING.md)。
+
 接好麦克风，在 Ubuntu 桌面登录后运行：
 
 ```sh
